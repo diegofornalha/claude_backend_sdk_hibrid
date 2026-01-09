@@ -1,0 +1,48 @@
+# Environment variables (contains secrets)
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Virtual environment
+venv/
+env/
+ENV/
+xxx/
+No/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and temp files
+*.log
+*.txt
+!requirements.txt
+
+# AgentCore local config (may contain sensitive data)
+.bedrock_agentcore.yaml
+
+# Example files should be committed
+!.env.example
+!.bedrock_agentcore.yaml.example
+
+# Test files
+test_*.py
+*_test.py
+
+
+mobile_backend/image/IAM-=.png
+.aws-sam/
+.aws-sam/build.toml

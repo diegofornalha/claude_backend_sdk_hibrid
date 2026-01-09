@@ -1,0 +1,62 @@
+# FastAPI and core dependencies (current working versions)
+fastapi==0.123.9
+uvicorn[standard]==0.38.0
+python-multipart==0.0.20
+python-dotenv==1.0.1
+pydantic==2.12.5
+pydantic[email]==2.12.5
+requests==2.32.3
+slowapi==0.1.9
+
+# AWS Services - REMOVIDO (não mais necessário)
+# boto3==1.42.3
+# botocore==1.42.3
+
+# Amazon Bedrock AgentCore - REMOVIDO (substituído por Claude Agent SDK)
+# bedrock-agentcore==1.1.1
+# bedrock-agentcore-starter-toolkit==0.2.2
+
+# Database - SQLite (atual)
+sqlite-connector-python==9.1.0
+DBUtils==3.1.0
+
+# Database - Turso (migração em andamento)
+libsql-client>=0.3.0
+libsql-experimental>=0.0.55
+aiosqlite>=0.22.0
+
+# Embeddings para RAG (Sentence Transformers local)
+sentence-transformers>=5.0.0
+torch>=2.0.0
+
+# Authentication (CRITICAL - Security updates)
+PyJWT==2.10.1
+passlib[bcrypt]==1.7.4
+bcrypt==4.2.1
+email-validator==2.2.0
+python-jose==3.3.0
+
+# Image processing (CRITICAL - Security updates)
+Pillow==11.0.0
+numpy==2.2.0
+
+# Web scraping
+beautifulsoup4==4.12.3
+lxml==5.3.0
+playwright==1.49.1
+
+# Visualization
+matplotlib==3.9.3
+folium==0.18.0
+pandas==2.2.3
+
+# Task Scheduling
+apscheduler==3.11.1
+
+# Claude Agent SDK (NOVO - para migração do chat)
+claude-agent-sdk>=0.1.12
+anyio>=4.0.0
+mcp>=1.0.0
+
+# Streaming (NOVO - para WebSocket)
+sse-starlette==1.8.2
