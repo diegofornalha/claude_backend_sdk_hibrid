@@ -42,7 +42,7 @@ file_checkpoints: Dict[str, List[Dict]] = {}
 
 # Importar funções de utilidade (evitando importação circular)
 from core.turso_database import get_db_connection
-from core.auth import verify_token
+from core.auth import verify_token, get_effective_role
 from core.session_manager import SessionManager
 from core.hooks import (
     validate_sql_query,
@@ -54,6 +54,10 @@ from core.hooks import (
     create_audit_tool_usage,
 )
 from tools import platform_mcp_server
+
+# Sistema de notificações e presença
+from core.websocket_manager import get_connection_manager, ConnectionManager
+from core.presence_service import get_presence_service, PresenceService
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +219,36 @@ def get_user_role(user_id: int) -> str:
     return get_effective_role(user_id)
 
 
+async def get_user_basic_info(user_id: int) -> Dict:
+    """
+    Busca dados básicos do usuário para notificações
+
+    Returns:
+        {username, role, email} ou dict com valores padrão
+    """
+    conn = get_db_connection()
+    if not conn:
+        return {"username": f"User {user_id}", "role": "unknown"}
+
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT username, email, role FROM users WHERE user_id = ? LIMIT 1",
+            (user_id,)
+        )
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        return result if result else {"username": f"User {user_id}", "role": "unknown"}
+
+    except Exception as e:
+        logger.error(f"Error getting user basic info: {e}")
+        if conn:
+            conn.close()
+        return {"username": f"User {user_id}", "role": "unknown"}
+
+
 async def get_user_from_token(authorization: Optional[str] = Header(None)) -> int:
     """Extract user ID from JWT token in Authorization header"""
     if not authorization:
@@ -239,7 +273,9 @@ session_manager = SessionManager(get_db_connection)
 @router.websocket("/ws")
 async def websocket_chat(
     websocket: WebSocket,
-    token: str = Query(...)  # JWT via query param ?token=...
+    token: str = Query(...),  # JWT via query param ?token=...
+    connection_mgr: ConnectionManager = Depends(get_connection_manager),
+    presence_service: PresenceService = Depends(get_presence_service)
 ):
     """
     WebSocket endpoint para chat streaming com Agent SDK + RAG
