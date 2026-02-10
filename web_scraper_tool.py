@@ -9,10 +9,10 @@ logger = logging.getLogger(__name__)
 
 # Allowed URLs for security
 ALLOWED_URLS = [
-    "https://www.nandamac.cloud/about",
-    "https://www.nandamac.cloud",
-    "https://www.nandamac.cloud/download",
-    "https://www.nandamac.cloud/code-repository"
+    "https://www.agentesintegrados.com/about",
+    "https://www.agentesintegrados.com",
+    "https://www.agentesintegrados.com/download",
+    "https://www.agentesintegrados.com/code-repository"
 ]
 
 def fetch_webpage_content(url: str) -> dict:
@@ -131,16 +131,16 @@ def get_nanda_info(topic: str = "general") -> dict:
     """
     # Map topics to URLs
     topic_urls = {
-        "about": "https://www.nandamac.cloud/about",
-        "contact": "https://www.nandamac.cloud",
-        "download": "https://www.nandamac.cloud/download",
-        "code-repository": "https://www.nandamac.cloud/code-repository",
-        "code": "https://www.nandamac.cloud/code-repository",
-        "app": "https://www.nandamac.cloud/download",
-        "general": "https://www.nandamac.cloud/about"
+        "about": "https://www.agentesintegrados.com/about",
+        "contact": "https://www.agentesintegrados.com",
+        "download": "https://www.agentesintegrados.com/download",
+        "code-repository": "https://www.agentesintegrados.com/code-repository",
+        "code": "https://www.agentesintegrados.com/code-repository",
+        "app": "https://www.agentesintegrados.com/download",
+        "general": "https://www.agentesintegrados.com/about"
     }
 
-    url = topic_urls.get(topic.lower(), "https://www.nandamac.cloud/about")
+    url = topic_urls.get(topic.lower(), "https://www.agentesintegrados.com/about")
 
     result = fetch_webpage_content(url)
 
@@ -166,7 +166,7 @@ FALLBACK_INFO = {
     "platform": "crm",
     "description": "AI-powered waste management system for Timor-Leste",
     "email": "crm@gmail.com",
-    "website": "https://www.nandamac.cloud",
+    "website": "https://www.agentesintegrados.com",
     "download": "https://bit.ly/crm",
-    "note": "For latest information, visit www.nandamac.cloud"
+    "note": "For latest information, visit www.agentesintegrados.com"
 }

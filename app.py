@@ -13,15 +13,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 # SQLite removido - usando Turso/libSQL
 import jwt
 import hashlib
 import random
 import string
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 from decimal import Decimal
 from dotenv import load_dotenv
@@ -115,7 +112,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS configuration - Restrict to known origins in production
 # Quando allow_credentials=True, não pode usar "*" - precisa especificar origens
-DEFAULT_ORIGINS = "https://mvp.nandamac.cloud,https://nandamac.cloud,http://localhost:4200,http://localhost:4201,http://localhost:4242,http://localhost:8234"
+DEFAULT_ORIGINS = "https://mvp.agentesintegrados.com,https://agentesintegrados.com,http://localhost:4200,http://localhost:4201,http://localhost:4242,http://localhost:8234"
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", DEFAULT_ORIGINS).split(",")
 app.add_middleware(
     CORSMiddleware,
@@ -169,45 +166,28 @@ JWT_EXPIRATION_HOURS = int(os.getenv('JWT_EXPIRATION_HOURS', '24'))
 ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv('ACCESS_TOKEN_EXPIRE_HOURS', '6'))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv('REFRESH_TOKEN_EXPIRE_DAYS', '7'))
 
-# Email configuration
-EMAIL_USER = os.getenv('EMAIL_USER')
-EMAIL_PASS = os.getenv('EMAIL_PASS')
-EMAIL_SERVER = os.getenv('EMAIL_SERVER')
-EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
-
 # Database configuration - Turso/libSQL (local ou cloud)
 from core.turso_database import get_db_connection
+
+# WhatsApp OTP
+from core.whatsapp_otp import send_whatsapp_otp, normalize_phone_number
 
 # Embeddings configuration (TODO: substituir Titan por alternativa open-source)
 embedding_enabled = False  # Embeddings temporariamente desabilitados
 
 # Define Pydantic models for request/response validation
-class UserBase(BaseModel):
-    username: Optional[str] = None  # Se não informado, usa o email
-    email: EmailStr
-
-class UserCreate(UserBase):
-    password: str
-    phone_number: Optional[str] = None
-    role: Optional[str] = "mentorado"  # 'mentorado', 'mentor', 'admin'
-    mentor_id: Optional[int] = None  # ID do mentor (para mentorados)
-
-class UserLogin(BaseModel):
-    email: EmailStr
-    password: str
-
-class OTPRequest(BaseModel):
-    email: EmailStr
-    username: str
-    otp: Optional[str] = None
-    email_credentials: Optional[Dict[str, str]] = None
+class PhoneOTPRequest(BaseModel):
+    """Request para login/registro via WhatsApp OTP"""
+    phone_number: str
 
 class OTPVerify(BaseModel):
-    email: EmailStr
+    """Verificação de OTP por phone_number"""
+    phone_number: str
     otp: str
 
 class ResendOTPRequest(BaseModel):
-    email: EmailStr
+    """Reenvio de OTP por phone_number"""
+    phone_number: str
 
 class ReportCreate(BaseModel):
     user_id: int
@@ -217,10 +197,6 @@ class ReportCreate(BaseModel):
     image_data: Optional[str] = None
     device_info: Optional[Dict[str, str]] = None
 
-class ChangePassword(BaseModel):
-    current_password: str
-    new_password: str
-
 class RefreshRequest(BaseModel):
     refresh_token: str
 
@@ -229,7 +205,7 @@ class LogoutRequest(BaseModel):
 
 class UpdateUserProfile(BaseModel):
     username: Optional[str] = None
-    email: Optional[EmailStr] = None
+    email: Optional[str] = None
     phone_number: Optional[str] = None
     profile_image_url: Optional[str] = None
 
@@ -770,33 +746,7 @@ def generate_otp():
     """Generate a 6-digit OTP"""
     return ''.join(random.choices(string.digits, k=6))
 
-def send_email(to_email, subject, body_html):
-    """Send an email using SMTP"""
-    if not EMAIL_USER or not EMAIL_PASS or not EMAIL_SERVER:
-        logger.warning("Email configuration missing. Email not sent.")
-        return False
-        
-    try:
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = subject
-        msg['From'] = EMAIL_USER
-        msg['To'] = to_email
-        
-        # Create HTML version of message
-        html_part = MIMEText(body_html, 'html')
-        msg.attach(html_part)
-        
-        # Connect to server and send
-        server = smtplib.SMTP(EMAIL_SERVER, EMAIL_PORT)
-        server.starttls()
-        server.login(EMAIL_USER, EMAIL_PASS)
-        server.sendmail(EMAIL_USER, to_email, msg.as_string())
-        server.quit()
-        
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send email: {e}")
-        return False
+# send_email removido — autenticação agora via WhatsApp OTP
 
 def save_image_locally(image_data, filename):
     """
@@ -1530,139 +1480,120 @@ logger.info("ConfigManager initialized - dynamic agent/tool management enabled")
 
 # Authentication routes
 @app.get("/api/auth/check-existing", response_model=dict)
-async def check_existing_user(email: str = None, username: str = None):
-    """Check if username or email already exists - helps users before registration"""
+async def check_existing_user(phone_number: str = None, username: str = None):
+    """Check if phone_number or username already exists"""
     try:
-        if not email and not username:
-            raise HTTPException(status_code=400, detail="Either email or username is required")
-            
+        if not phone_number and not username:
+            raise HTTPException(status_code=400, detail="phone_number ou username é obrigatório")
+
         connection = get_db_connection()
         cursor = connection.cursor(dictionary=True)
-        
+
         conditions = []
         params = []
-        
-        if email:
-            conditions.append("email = %s")
-            params.append(email)
+
+        if phone_number:
+            normalized = normalize_phone_number(phone_number)
+            conditions.append("phone_number = %s")
+            params.append(normalized)
         if username:
-            conditions.append("username = %s") 
+            conditions.append("username = %s")
             params.append(username)
-            
+
         where_clause = " OR ".join(conditions)
-        
+
         cursor.execute(
-            f"SELECT username, email FROM users WHERE {where_clause}",
+            f"SELECT username, phone_number FROM users WHERE {where_clause}",
             params
         )
         existing_user = cursor.fetchone()
-        
+
         cursor.close()
         connection.close()
-        
+
         if existing_user:
             return {
                 "status": "exists",
-                "message": "User account found",
-                "suggestion": "Try logging in instead of registering",
+                "message": "Conta encontrada",
+                "suggestion": "Tente fazer login ao invés de registrar",
                 "existing_username": existing_user['username'],
-                "existing_email": existing_user['email']
+                "existing_phone": existing_user['phone_number']
             }
         else:
             return {
-                "status": "available", 
-                "message": "Username/email is available for registration"
+                "status": "available",
+                "message": "Número disponível para registro"
             }
-            
+
     except HTTPException as e:
         raise e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Check existing user error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Improved registration endpoint with better logging
 @app.post("/api/auth/register", response_model=dict)
-@limiter.limit("5/minute")  # Rate limit registration to prevent spam
-async def register(user_data: UserCreate, request: Request):
-    """Register a new user - creates account directly without email verification"""
+@limiter.limit("5/minute")
+async def register(data: PhoneOTPRequest, request: Request):
+    """Registro via WhatsApp OTP — envia OTP para o número informado"""
     try:
-        # Extrair prefixo do email (parte antes do @) para gerar username
-        email_prefix = user_data.email.split('@')[0]
-        logger.info(f"Registration attempt for email: {user_data.email}")
+        phone = normalize_phone_number(data.phone_number)
+        logger.info(f"Registration attempt for phone: {phone}")
 
         connection = get_db_connection()
         cursor = connection.cursor(dictionary=True)
 
-        # Check if email already exists (email é o identificador único agora)
+        # Verificar se já existe usuário com este número
         cursor.execute(
-            "SELECT user_id, username, email FROM users WHERE email = %s",
-            (user_data.email,)
+            "SELECT user_id FROM users WHERE phone_number = %s",
+            (phone,)
         )
-        existing_user = cursor.fetchone()
-
-        if existing_user:
-            logger.warning(f"User already exists: {existing_user}")
+        if cursor.fetchone():
             cursor.close()
             connection.close()
-            raise HTTPException(status_code=409, detail="E-mail já cadastrado")
+            raise HTTPException(status_code=409, detail="Número já cadastrado. Faça login.")
 
-        # Hash the password
-        hashed_password = hash_password(user_data.password)
+        # Gerar OTP
+        otp = generate_otp()
+        expires_at = datetime.now() + timedelta(minutes=10)
 
-        # Role padrão é mentorado
-        valid_roles = ['mentorado', 'mentor', 'admin']
-        role = user_data.role if user_data.role in valid_roles else 'mentorado'
+        # Limpar registros pendentes anteriores deste número
+        cursor.execute(
+            "DELETE FROM pending_registrations WHERE phone_number = %s",
+            (phone,)
+        )
 
-        # Create user with temporary username (will be updated with user_id)
+        # Salvar registro pendente
         cursor.execute(
             """
-            INSERT INTO users (username, email, phone_number, password_hash, registration_date, account_status, verification_status, role)
-            VALUES (%s, %s, %s, %s, %s, 'active', 1, %s)
+            INSERT INTO pending_registrations (phone_number, otp, expires_at, attempts, role)
+            VALUES (%s, %s, %s, 0, 'mentorado')
             """,
-            (email_prefix, user_data.email, user_data.phone_number, hashed_password, datetime.now(), role)
+            (phone, otp, expires_at)
         )
         connection.commit()
 
-        # Get the new user ID
-        user_id = cursor.lastrowid
-
-        # Gerar username final: prefixo#XX (onde XX é o user_id formatado)
-        username = f"{email_prefix}#{user_id:02d}"
-
-        # Atualizar username com o ID
-        cursor.execute(
-            "UPDATE users SET username = %s WHERE user_id = %s",
-            (username, user_id)
-        )
-        connection.commit()
-
-        # Generate access token and refresh token for auto-login
-        access_token = generate_access_token(user_id)
-        refresh_token = generate_refresh_token(user_id, cursor)
-        connection.commit()
+        # Enviar OTP via WhatsApp
+        sent = send_whatsapp_otp(phone, otp)
 
         cursor.close()
         connection.close()
 
-        logger.info(f"User registered successfully: {username} (ID: {user_id})")
+        logger.info(f"Registration OTP for {phone}: {otp}")
 
         return {
             "status": "success",
-            "message": "Conta criada com sucesso!",
-            "token": access_token,
-            "refresh_token": refresh_token,
-            "user": {
-                "user_id": user_id,
-                "username": username,
-                "email": user_data.email,
-                "phone_number": user_data.phone_number,
-                "role": role
-            }
+            "message": "Código de verificação enviado via WhatsApp",
+            "phone_number": phone,
+            "otp_sent": sent,
+            "expires_at": expires_at.strftime('%Y-%m-%d %H:%M:%S')
         }
 
     except HTTPException as e:
-        logger.error(f"Registration HTTPException: {e.detail}")
         raise e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Registration error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1691,198 +1622,81 @@ async def force_cleanup_all_registrations():
     except Exception as e:
         logger.error(f"Force cleanup error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-@app.post("/api/auth/verify-registration", response_model=TokenData)
-async def verify_registration(verification: OTPVerify):
+@app.post("/api/auth/login", response_model=dict)
+@limiter.limit("60/minute")
+async def login(data: PhoneOTPRequest, request: Request):
+    """Login via WhatsApp OTP — envia OTP para o número cadastrado"""
     try:
-        # Get pending registration details
-        connection = get_db_connection()
-        cursor = connection.cursor(dictionary=True)
-        
-        cursor.execute(
-            """
-            SELECT * FROM pending_registrations
-            WHERE email = %s AND otp = %s
-            """,
-            (verification.email, verification.otp)
-        )
-        
-        pending = cursor.fetchone()
-        
-        if not pending:
-            cursor.execute(
-                """
-                SELECT * FROM pending_registrations
-                WHERE email = %s
-                """,
-                (verification.email,)
-            )
-            
-            wrong_otp_pending = cursor.fetchone()
-            
-            if wrong_otp_pending:
-                # Increment attempts
-                cursor.execute(
-                    "UPDATE pending_registrations SET attempts = attempts + 1 WHERE registration_id = %s",
-                    (wrong_otp_pending['registration_id'],)
-                )
-                connection.commit()
-                
-                # Check if too many attempts
-                if wrong_otp_pending['attempts'] >= 3:
-                    cursor.execute(
-                        "DELETE FROM pending_registrations WHERE registration_id = %s",
-                        (wrong_otp_pending['registration_id'],)
-                    )
-                    connection.commit()
-                    cursor.close()
-                    connection.close()
-                    raise HTTPException(status_code=400, detail="Too many failed attempts. Please register again.")
-                
-                cursor.close()
-                connection.close()
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Invalid OTP. Please try again. Attempts left: {3 - wrong_otp_pending['attempts']}"
-                )
-            
-            cursor.close()
-            connection.close()
-            raise HTTPException(status_code=404, detail="Invalid verification details or OTP expired")
-        
-        # Check if OTP has expired
-        now = datetime.now()
-        if pending['expires_at'] < now:
-            # Delete expired registration
-            cursor.execute(
-                "DELETE FROM pending_registrations WHERE registration_id = %s",
-                (pending['registration_id'],)
-            )
-            connection.commit()
-            cursor.close()
-            connection.close()
-            raise HTTPException(status_code=400, detail="OTP has expired. Please register again.")
-        
-        # OTP is valid - create the actual user
-        cursor.execute(
-            """
-            INSERT INTO users 
-            (username, email, phone_number, password_hash, registration_date, account_status, verification_status) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            (pending['username'], pending['email'], pending['phone_number'], 
-             pending['password_hash'], datetime.now(), 'active', True)
-        )
-        
-        user_id = cursor.lastrowid
-        connection.commit()
-        
-        # Delete pending registration
-        cursor.execute(
-            "DELETE FROM pending_registrations WHERE registration_id = %s",
-            (pending['registration_id'],)
-        )
-        connection.commit()
-        
-        # Get user details
-        cursor.execute(
-            """
-            SELECT user_id, username, email, phone_number, registration_date, 
-                   account_status, profile_image_url, verification_status
-            FROM users WHERE user_id = %s
-            """,
-            (user_id,)
-        )
-        
-        user = cursor.fetchone()
-        cursor.close()
-        connection.close()
-        
-        # Convert datetime objects to strings
-        if user:
-            for key, value in user.items():
-                if isinstance(value, datetime):
-                    user[key] = value.strftime('%Y-%m-%d %H:%M:%S')
-        
-        # Generate token
-        token = generate_token(user_id)
-        
-        return {
-            "status": "success",
-            "message": "Registration completed successfully",
-            "token": token,
-            "user": user
-        }
-        
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        logger.error(f"Verification error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        phone = normalize_phone_number(data.phone_number)
+        logger.info(f"Login attempt for phone: {phone}")
 
-@app.post("/api/auth/login", response_model=TokenData)
-@limiter.limit("60/minute")  # Rate limit login attempts
-async def login(login_data: UserLogin, request: Request):
-    try:
-        # Get user by email
         connection = get_db_connection()
         cursor = connection.cursor(dictionary=True)
 
+        # Verificar se usuário existe
         cursor.execute(
-            """
-            SELECT user_id, username, email, phone_number, password_hash, registration_date,
-                   last_login, account_status, profile_image_url, verification_status, role,
-                   admin_level
-            FROM users WHERE email = %s
-            """,
-            (login_data.email,)
+            "SELECT user_id, username FROM users WHERE phone_number = %s",
+            (phone,)
         )
-        
         user = cursor.fetchone()
-        
+
         if not user:
             cursor.close()
             connection.close()
-            raise HTTPException(status_code=401, detail="E-mail ou senha inválidos")
-        
-        # Verify password
-        if not verify_password(user['password_hash'], login_data.password):
-            cursor.close()
-            connection.close()
-            raise HTTPException(status_code=401, detail="E-mail ou senha inválidos")
-        
-        # Update last login time
+            raise HTTPException(status_code=404, detail="Número não cadastrado. Registre-se primeiro.")
+
+        # Gerar OTP
+        otp = generate_otp()
+        expires_at = datetime.now() + timedelta(minutes=10)
+
+        # Verificar se já existe OTP pendente
         cursor.execute(
-            "UPDATE users SET last_login = %s WHERE user_id = %s",
-            (datetime.now(), user['user_id'])
+            "SELECT verification_id FROM user_verifications WHERE user_id = %s AND is_verified = FALSE",
+            (user['user_id'],)
         )
+        existing = cursor.fetchone()
+
+        if existing:
+            cursor.execute(
+                """
+                UPDATE user_verifications
+                SET otp = %s, phone_number = %s, created_at = %s, expires_at = %s, attempts = 0
+                WHERE verification_id = %s
+                """,
+                (otp, phone, datetime.now(), expires_at, existing['verification_id'])
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO user_verifications
+                (user_id, phone_number, otp, created_at, expires_at)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (user['user_id'], phone, otp, datetime.now(), expires_at)
+            )
+
         connection.commit()
 
-        # Remove password hash from user object
-        user.pop('password_hash', None)
-
-        # Convert datetime objects to strings
-        for key, value in user.items():
-            if isinstance(value, datetime):
-                user[key] = value.strftime('%Y-%m-%d %H:%M:%S')
-
-        # Generate access token and refresh token
-        access_token = generate_access_token(user['user_id'])
-        refresh_token = generate_refresh_token(user['user_id'], cursor)
-        connection.commit()
+        # Enviar OTP via WhatsApp
+        sent = send_whatsapp_otp(phone, otp)
 
         cursor.close()
         connection.close()
 
+        logger.info(f"Login OTP for {phone}: {otp}")
+
         return {
             "status": "success",
-            "message": "Login successful",
-            "token": access_token,
-            "refresh_token": refresh_token,
-            "user": user
+            "message": "Código de verificação enviado via WhatsApp",
+            "phone_number": phone,
+            "otp_sent": sent,
+            "expires_at": expires_at.strftime('%Y-%m-%d %H:%M:%S')
         }
-        
+
     except HTTPException as e:
         raise e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Login error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1974,378 +1788,301 @@ async def logout(logout_data: LogoutRequest, request: Request, current_user_id: 
         logger.error(f"Logout error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/auth/send-otp", response_model=dict)
-async def send_otp(otp_request: OTPRequest):
-    try:
-        # Validate required fields
-        email = otp_request.email
-        username = otp_request.username
-        
-        # If OTP is provided in the request, use it (for testing)
-        # Otherwise generate a new one
-        otp = otp_request.otp or generate_otp()
-        
-        # Get user ID
-        connection = get_db_connection()
-        cursor = connection.cursor(dictionary=True)
-        
-        cursor.execute(
-            "SELECT user_id FROM users WHERE email = %s",
-            (email,)
-        )
-        
-        user = cursor.fetchone()
-        
-        if not user:
-            cursor.close()
-            connection.close()
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        user_id = user['user_id']
-        
-        # Set expiration time (10 minutes from now)
-        expires_at = datetime.now() + timedelta(minutes=10)
-        
-        # Check if there's an existing OTP for this user
-        cursor.execute(
-            "SELECT verification_id FROM user_verifications WHERE user_id = %s AND is_verified = FALSE",
-            (user_id,)
-        )
-        
-        existing_verification = cursor.fetchone()
-        
-        if existing_verification:
-            # Update existing verification
-            cursor.execute(
-                """
-                UPDATE user_verifications 
-                SET otp = %s, created_at = %s, expires_at = %s, attempts = 0
-                WHERE verification_id = %s
-                """,
-                (otp, datetime.now(), expires_at, existing_verification['verification_id'])
-            )
-        else:
-            # Create new verification
-            cursor.execute(
-                """
-                INSERT INTO user_verifications 
-                (user_id, email, otp, created_at, expires_at)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                (user_id, email, otp, datetime.now(), expires_at)
-            )
-        
-        connection.commit()
-        
-        # Prepare email content
-        email_subject = "Your OTP Verification Code - crm"
-        email_body = f"""
-        <html>
-        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-            <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                <h2 style="color: #4CAF50;">crm - Email Verification</h2>
-                <p>Hello {username},</p>
-                <p>Your one-time password (OTP) for crm account verification is:</p>
-                <div style="background-color: #f6f6f6; padding: 12px; text-align: center; border-radius: 5px; margin: 20px 0; font-size: 24px; letter-spacing: 5px; font-weight: bold;">
-                    {otp}
-                </div>
-                <p>This code is valid for 10 minutes.</p>
-                <p>If you did not request this code, please ignore this email.</p>
-                <p>Thank you,<br>crm Team</p>
-            </div>
-        </body>
-        </html>
-        """
-        
-        # For development, log the OTP
-        logger.info(f"OTP for {email}: {otp}")
-        
-        # Send the email
-        email_sent = send_email(email, email_subject, email_body)
-        
-        cursor.close()
-        connection.close()
-        
-        if email_sent:
-            return {
-                "status": "success",
-                "message": "OTP sent successfully",
-                "otp": otp,  # Include OTP in response for development only
-                "expires_at": expires_at.strftime('%Y-%m-%d %H:%M:%S')
-            }
-        else:
-            return {
-                "status": "error", 
-                "message": "Failed to send OTP email but code was generated",
-                "otp": otp  # Include OTP in response for development only
-            }
-        
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        logger.error(f"Send OTP error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/auth/verify-otp", response_model=TokenData)
+@app.post("/api/auth/verify-otp", response_model=dict)
 async def verify_otp(verification: OTPVerify):
+    """Verifica OTP — funciona tanto para login quanto para registro"""
     try:
-        # Get verification details
+        phone = normalize_phone_number(verification.phone_number)
         connection = get_db_connection()
         cursor = connection.cursor(dictionary=True)
-        
+
+        # === Tentar como LOGIN (user_verifications) ===
         cursor.execute(
             """
             SELECT v.*, u.user_id, u.username
             FROM user_verifications v
             JOIN users u ON v.user_id = u.user_id
-            WHERE v.email = %s AND v.is_verified = FALSE
+            WHERE v.phone_number = %s AND v.is_verified = FALSE
             ORDER BY v.created_at DESC
             LIMIT 1
             """,
-            (verification.email,)
+            (phone,)
         )
-        
-        verification_record = cursor.fetchone()
-        
-        if not verification_record:
+        login_record = cursor.fetchone()
+
+        if login_record:
+            # Verificar expiração
+            now = datetime.now()
+            if login_record['expires_at'] < now:
+                cursor.close()
+                connection.close()
+                raise HTTPException(status_code=400, detail="OTP expirado")
+
+            # Incrementar tentativas
+            cursor.execute(
+                "UPDATE user_verifications SET attempts = attempts + 1 WHERE verification_id = %s",
+                (login_record['verification_id'],)
+            )
+            connection.commit()
+
+            # Verificar OTP
+            if login_record['otp'] != verification.otp:
+                if login_record['attempts'] >= 3:
+                    cursor.execute(
+                        "UPDATE user_verifications SET expires_at = %s WHERE verification_id = %s",
+                        (now - timedelta(minutes=1), login_record['verification_id'])
+                    )
+                    connection.commit()
+                    cursor.close()
+                    connection.close()
+                    raise HTTPException(status_code=400, detail="Muitas tentativas. OTP expirado.")
+
+                cursor.close()
+                connection.close()
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"OTP inválido. Tentativas restantes: {3 - login_record['attempts']}"
+                )
+
+            # OTP válido — marcar como verificado
+            cursor.execute(
+                "UPDATE user_verifications SET is_verified = TRUE WHERE verification_id = %s",
+                (login_record['verification_id'],)
+            )
+
+            # Atualizar last_login
+            cursor.execute(
+                "UPDATE users SET last_login = %s, verification_status = TRUE WHERE user_id = %s",
+                (datetime.now(), login_record['user_id'])
+            )
+            connection.commit()
+
+            # Gerar tokens
+            access_token = generate_access_token(login_record['user_id'])
+            refresh_token = generate_refresh_token(login_record['user_id'], cursor)
+            connection.commit()
+
+            # Buscar dados do usuário
+            cursor.execute(
+                """
+                SELECT user_id, username, email, phone_number, registration_date,
+                       last_login, account_status, profile_image_url, verification_status, role
+                FROM users WHERE user_id = %s
+                """,
+                (login_record['user_id'],)
+            )
+            user = cursor.fetchone()
             cursor.close()
             connection.close()
-            raise HTTPException(status_code=404, detail="No pending verification found")
-        
-        # Check if OTP has expired
-        now = datetime.now()
-        if verification_record['expires_at'] < now:
-            cursor.close()
-            connection.close()
-            raise HTTPException(status_code=400, detail="OTP has expired")
-        
-        # Update attempt count
+
+            if user:
+                for key, value in user.items():
+                    if isinstance(value, datetime):
+                        user[key] = value.strftime('%Y-%m-%d %H:%M:%S')
+
+            return {
+                "status": "success",
+                "message": "Login realizado com sucesso",
+                "token": access_token,
+                "refresh_token": refresh_token,
+                "user": user
+            }
+
+        # === Tentar como REGISTRO (pending_registrations) ===
         cursor.execute(
-            "UPDATE user_verifications SET attempts = attempts + 1 WHERE verification_id = %s",
-            (verification_record['verification_id'],)
+            """
+            SELECT * FROM pending_registrations
+            WHERE phone_number = %s
+            ORDER BY expires_at DESC
+            LIMIT 1
+            """,
+            (phone,)
+        )
+        pending = cursor.fetchone()
+
+        if not pending:
+            cursor.close()
+            connection.close()
+            raise HTTPException(status_code=404, detail="Nenhuma verificação pendente encontrada")
+
+        # Verificar expiração
+        now = datetime.now()
+        if pending['expires_at'] < now:
+            cursor.execute(
+                "DELETE FROM pending_registrations WHERE registration_id = %s",
+                (pending['registration_id'],)
+            )
+            connection.commit()
+            cursor.close()
+            connection.close()
+            raise HTTPException(status_code=400, detail="OTP expirado. Registre-se novamente.")
+
+        # Incrementar tentativas
+        cursor.execute(
+            "UPDATE pending_registrations SET attempts = attempts + 1 WHERE registration_id = %s",
+            (pending['registration_id'],)
         )
         connection.commit()
-        
-        # Check if OTP matches
-        if verification_record['otp'] != verification.otp:
-            # If too many attempts, mark as expired
-            if verification_record['attempts'] >= 3:
+
+        # Verificar OTP
+        if pending['otp'] != verification.otp:
+            if pending['attempts'] >= 3:
                 cursor.execute(
-                    "UPDATE user_verifications SET expires_at = %s WHERE verification_id = %s",
-                    (now - timedelta(minutes=1), verification_record['verification_id'])
+                    "DELETE FROM pending_registrations WHERE registration_id = %s",
+                    (pending['registration_id'],)
                 )
                 connection.commit()
                 cursor.close()
                 connection.close()
-                raise HTTPException(status_code=400, detail="Too many failed attempts, OTP is now expired")
-            
+                raise HTTPException(status_code=400, detail="Muitas tentativas. Registre-se novamente.")
+
             cursor.close()
             connection.close()
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid OTP. Attempts left: {3 - verification_record['attempts']}"
+                detail=f"OTP inválido. Tentativas restantes: {3 - pending['attempts']}"
             )
-        
-        # OTP is valid - mark as verified
-        cursor.execute(
-            "UPDATE user_verifications SET is_verified = TRUE WHERE verification_id = %s",
-            (verification_record['verification_id'],)
-        )
-        
-        # Update user's verification status
-        cursor.execute(
-            "UPDATE users SET verification_status = TRUE WHERE user_id = %s",
-            (verification_record['user_id'],)
-        )
-        connection.commit()
-        
-        # Generate token for user
-        token = generate_token(verification_record['user_id'])
-        
-        # Get updated user data
+
+        # OTP válido — criar usuário
+        role = pending.get('role', 'mentorado')
+        phone_suffix = phone[-4:]
+
         cursor.execute(
             """
-            SELECT user_id, username, email, phone_number, registration_date, 
-                   last_login, account_status, profile_image_url, verification_status
-            FROM users WHERE user_id = %s
+            INSERT INTO users (username, email, password_hash, phone_number, registration_date, account_status, verification_status, role)
+            VALUES (%s, %s, %s, %s, %s, 'active', 1, %s)
             """,
-            (verification_record['user_id'],)
+            (f"user{phone_suffix}", "", "", phone, datetime.now(), role)
         )
-        
-        user = cursor.fetchone()
+        connection.commit()
+
+        user_id = cursor.lastrowid
+
+        # Atualizar username com ID
+        username = f"user{phone_suffix}#{user_id:02d}"
+        cursor.execute(
+            "UPDATE users SET username = %s WHERE user_id = %s",
+            (username, user_id)
+        )
+
+        # Remover registro pendente
+        cursor.execute(
+            "DELETE FROM pending_registrations WHERE registration_id = %s",
+            (pending['registration_id'],)
+        )
+        connection.commit()
+
+        # Gerar tokens
+        access_token = generate_access_token(user_id)
+        refresh_token = generate_refresh_token(user_id, cursor)
+        connection.commit()
+
         cursor.close()
         connection.close()
-        
-        # Convert datetime objects to strings
-        if user:
-            for key, value in user.items():
-                if isinstance(value, datetime):
-                    user[key] = value.strftime('%Y-%m-%d %H:%M:%S')
-        
+
+        logger.info(f"User registered via OTP: {username} (ID: {user_id})")
+
         return {
             "status": "success",
-            "message": "Email verified successfully",
-            "token": token,
-            "user": user
+            "message": "Conta criada com sucesso!",
+            "token": access_token,
+            "refresh_token": refresh_token,
+            "user": {
+                "user_id": user_id,
+                "username": username,
+                "phone_number": phone,
+                "role": role
+            }
         }
-        
+
     except HTTPException as e:
         raise e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Verify OTP error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/auth/resend-otp", response_model=dict)
-async def resend_otp(request: ResendOTPRequest):
+@limiter.limit("5/minute")
+async def resend_otp(data: ResendOTPRequest, request: Request):
+    """Reenvia OTP via WhatsApp (funciona para login e registro)"""
     try:
-        email = request.email
-        
-        # Get user details
-        connection = get_db_connection()
-        cursor = connection.cursor(dictionary=True)
-        
-        cursor.execute(
-            "SELECT user_id, username FROM users WHERE email = %s",
-            (email,)
-        )
-        
-        user = cursor.fetchone()
-        
-        if not user:
-            cursor.close()
-            connection.close()
-            raise HTTPException(status_code=404, detail="User not found for this email")
-        
-        # Generate new OTP
+        phone = normalize_phone_number(data.phone_number)
         otp = generate_otp()
         expires_at = datetime.now() + timedelta(minutes=10)
-        
-        # Check if there's an existing OTP for this user
+
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+
+        # Tentar como login (user_verifications)
         cursor.execute(
-            "SELECT verification_id FROM user_verifications WHERE user_id = %s AND is_verified = FALSE",
-            (user['user_id'],)
+            """
+            SELECT v.verification_id, u.user_id
+            FROM user_verifications v
+            JOIN users u ON v.user_id = u.user_id
+            WHERE v.phone_number = %s AND v.is_verified = FALSE
+            ORDER BY v.created_at DESC LIMIT 1
+            """,
+            (phone,)
         )
-        
-        existing_verification = cursor.fetchone()
-        
-        if existing_verification:
-            # Update existing verification
+        login_record = cursor.fetchone()
+
+        if login_record:
             cursor.execute(
                 """
-                UPDATE user_verifications 
+                UPDATE user_verifications
                 SET otp = %s, created_at = %s, expires_at = %s, attempts = 0
                 WHERE verification_id = %s
                 """,
-                (otp, datetime.now(), expires_at, existing_verification['verification_id'])
+                (otp, datetime.now(), expires_at, login_record['verification_id'])
             )
+            connection.commit()
         else:
-            # Create new verification
+            # Tentar como registro (pending_registrations)
             cursor.execute(
-                """
-                INSERT INTO user_verifications 
-                (user_id, email, otp, created_at, expires_at)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                (user['user_id'], email, otp, datetime.now(), expires_at)
+                "SELECT registration_id FROM pending_registrations WHERE phone_number = %s",
+                (phone,)
             )
-        
-        connection.commit()
-        
-        # Send OTP email
-        email_subject = "crm - New Verification Code"
-        email_body = f"""
-        <html>
-        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-            <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                <h2 style="color: #4CAF50;">crm - New Verification Code</h2>
-                <p>Hello {user['username']},</p>
-                <p>You requested a new verification code. Please use the following code to complete your verification:</p>
-                <div style="background-color: #f6f6f6; padding: 12px; text-align: center; border-radius: 5px; margin: 20px 0; font-size: 24px; letter-spacing: 5px; font-weight: bold;">
-                    {otp}
-                </div>
-                <p>This code is valid for 10 minutes. If you don't verify within this time, you'll need to request a new code.</p>
-                <p>If you did not request this code, please ignore this email.</p>
-                <p>Thank you,<br>crm Team</p>
-            </div>
-        </body>
-        </html>
-        """
-        
-        # For development, log the OTP
-        logger.info(f"Resent OTP for {email}: {otp}")
-        
-        # Send the email
-        email_sent = send_email(email, email_subject, email_body)
-        
+            pending = cursor.fetchone()
+
+            if pending:
+                cursor.execute(
+                    """
+                    UPDATE pending_registrations
+                    SET otp = %s, expires_at = %s, attempts = 0
+                    WHERE registration_id = %s
+                    """,
+                    (otp, expires_at, pending['registration_id'])
+                )
+                connection.commit()
+            else:
+                cursor.close()
+                connection.close()
+                raise HTTPException(status_code=404, detail="Nenhuma verificação pendente para este número")
+
+        # Enviar OTP via WhatsApp
+        sent = send_whatsapp_otp(phone, otp)
+
         cursor.close()
         connection.close()
-        
-        if email_sent:
-            return {
-                "status": "success",
-                "message": "New OTP sent successfully",
-                "otp": otp,  # Include OTP in response for development only
-                "expires_at": expires_at.strftime('%Y-%m-%d %H:%M:%S')
-            }
-        else:
-            return {
-                "status": "error", 
-                "message": "Failed to send OTP email but code was generated",
-                "otp": otp  # Include OTP in response for development only
-            }
-        
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        logger.error(f"Resend OTP error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-        
-@app.post("/api/auth/change-password", response_model=dict)
-async def change_password(password_data: ChangePassword, user_id: int = Depends(get_user_from_token)):
-    try:
-        # Get user's current password hash
-        connection = get_db_connection()
-        cursor = connection.cursor(dictionary=True)
-        
-        cursor.execute(
-            "SELECT password_hash FROM users WHERE user_id = %s",
-            (user_id,)
-        )
-        
-        user = cursor.fetchone()
-        
-        if not user:
-            cursor.close()
-            connection.close()
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Verify current password
-        if not verify_password(user['password_hash'], password_data.current_password):
-            cursor.close()
-            connection.close()
-            raise HTTPException(status_code=401, detail="Current password is incorrect")
-        
-        # Update password
-        new_password_hash = hash_password(password_data.new_password)
-        
-        cursor.execute(
-            "UPDATE users SET password_hash = %s WHERE user_id = %s",
-            (new_password_hash, user_id)
-        )
-        connection.commit()
-        
-        cursor.close()
-        connection.close()
-        
+
+        logger.info(f"Resent OTP for {phone}: {otp}")
+
         return {
             "status": "success",
-            "message": "Password changed successfully"
+            "message": "Novo código enviado via WhatsApp",
+            "phone_number": phone,
+            "otp_sent": sent,
+            "expires_at": expires_at.strftime('%Y-%m-%d %H:%M:%S')
         }
-        
+
     except HTTPException as e:
         raise e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Change password error: {e}")
+        logger.error(f"Resend OTP error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.patch("/api/users/{user_id}", response_model=dict)
@@ -2487,26 +2224,13 @@ async def get_user(user_id: int, current_user_id: int = Depends(get_user_from_to
 @app.delete("/api/users/{user_id}", response_model=dict)
 async def delete_user_account(
     user_id: int,
-    password: str = Body(..., embed=True),
     current_user_id: int = Depends(get_user_from_token)
 ):
     """
     Deleta conta do usuário (LGPD - Direito de Exclusão)
 
-    Requer confirmação de senha por segurança.
-    Remove TODOS os dados relacionados:
-    - User
-    - Client
-    - Chat sessions e messages
-    - Assessments e scores
-    - Refresh tokens
-
-    Args:
-        user_id: ID do usuário a deletar
-        password: Senha atual para confirmação
-
-    Returns:
-        Confirmação de deleção
+    Autenticação via JWT — sem senha no sistema passwordless.
+    Remove TODOS os dados relacionados.
     """
     try:
         # Verificar autorização (só pode deletar própria conta)
@@ -2522,9 +2246,8 @@ async def delete_user_account(
 
         cursor = connection.cursor(dictionary=True)
 
-        # 1. Buscar hash da senha para validação
         cursor.execute(
-            "SELECT password_hash, username, email FROM users WHERE user_id = %s",
+            "SELECT username, email, phone_number FROM users WHERE user_id = %s",
             (user_id,)
         )
         user = cursor.fetchone()
@@ -2533,15 +2256,6 @@ async def delete_user_account(
             cursor.close()
             connection.close()
             raise HTTPException(status_code=404, detail="User not found")
-
-        # 2. Verificar senha
-        if not verify_password(user['password_hash'], password):
-            cursor.close()
-            connection.close()
-            raise HTTPException(
-                status_code=401,
-                detail="Senha incorreta. Deleção cancelada"
-            )
 
         # 3. Log de auditoria (antes de deletar)
         logger.warning(
@@ -3677,7 +3391,7 @@ async def custom_404_handler(request: requests, _exc: HTTPException):
         content={
             "project": "crm",
             "message": "🌱 This path doesn't exist in our crm ecosystem",
-            "Contact": "https://www.nandamac.cloud",
+            "Contact": "https://www.agentesintegrados.com",
             "Visit": "www.nandamac.cloud"
         }
     )
@@ -4354,19 +4068,19 @@ async def list_all_mentors(user_id: int = Depends(get_user_from_token)):
 
 @app.post("/api/admin/mentors", response_model=dict)
 async def create_or_promote_mentor(
-    email: str = Body(...),
+    phone_number: str = Body(...),
     username: str = Body(None),
-    password: str = Body(None),
-    phone_number: str = Body(None),
     user_id: int = Depends(get_user_from_token)
 ):
     """
-    Cria novo mentor ou promove usuário existente (apenas admin)
+    Cria novo mentor ou promove usuário existente (apenas admin).
+    Busca por phone_number. Sem senha — sistema passwordless.
     """
-    # Verificar role
     user_role = get_user_role(user_id)
     if user_role != 'admin':
         raise HTTPException(status_code=403, detail="Acesso negado. Apenas admins.")
+
+    phone = normalize_phone_number(phone_number)
 
     conn = get_db_connection()
     if not conn:
@@ -4375,8 +4089,8 @@ async def create_or_promote_mentor(
     try:
         cursor = conn.cursor(dictionary=True)
 
-        # Verificar se usuário existe
-        cursor.execute("SELECT user_id, role FROM users WHERE email = %s", (email,))
+        # Verificar se usuário existe por phone_number
+        cursor.execute("SELECT user_id, role FROM users WHERE phone_number = %s", (phone,))
         existing_user = cursor.fetchone()
 
         if existing_user:
@@ -4387,37 +4101,28 @@ async def create_or_promote_mentor(
             )
             conn.commit()
             new_mentor_id = existing_user['user_id']
-            message = f"Usuário promovido a mentor"
-
+            message = "Usuário promovido a mentor"
         else:
-            # Criar novo mentor
-            if not username or not password:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Username e password são obrigatórios para criar novo mentor"
-                )
-
-            password_hash = hash_password(password)
+            # Criar novo mentor (sem senha)
+            if not username:
+                phone_suffix = phone[-4:]
+                username = f"mentor{phone_suffix}"
 
             cursor.execute("""
-                INSERT INTO users (username, email, password_hash, phone_number, account_status, role)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (
-                username,
-                email,
-                password_hash,
-                phone_number,
-                'active',
-                'mentor'
-            ))
+                INSERT INTO users (username, email, password_hash, phone_number, account_status, role, verification_status)
+                VALUES (%s, %s, %s, %s, 'active', 'mentor', 1)
+            """, (username, "", "", phone))
             conn.commit()
             new_mentor_id = cursor.lastrowid
-            message = "Novo mentor criado"
 
-        # Criar código de convite
-        import random
-        # Invite codes removidos - funcionalidade descontinuada
-        conn.commit()
+            # Atualizar username com ID
+            final_username = f"{username}#{new_mentor_id:02d}"
+            cursor.execute(
+                "UPDATE users SET username = %s WHERE user_id = %s",
+                (final_username, new_mentor_id)
+            )
+            conn.commit()
+            message = "Novo mentor criado"
 
         cursor.close()
         conn.close()
@@ -4425,16 +4130,18 @@ async def create_or_promote_mentor(
         return {
             "success": True,
             "message": message,
-            "mentor_id": new_mentor_id,
-            "invite_code": invite_code
+            "mentor_id": new_mentor_id
         }
 
+    except HTTPException:
+        if conn:
+            conn.close()
+        raise
     except Exception as e:
         logger.error(f"Erro ao criar/promover mentor: {e}")
         if conn:
             conn.close()
-        import traceback
-        logger.error(f"Erro ao listar mentorados: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/api/admin/mentors/{mentor_id}", response_model=dict)
@@ -5032,79 +4739,7 @@ async def assign_mentor_to_mentorado(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def generate_temp_password(_length=8):
-    """Retorna senha temporária padrão"""
-    # TODO: Implementar geração de senha aleatória com base no length
-    return "provisoria"
-
-
-@app.post("/api/admin/reset-user-password/{target_user_id}", response_model=dict)
-async def admin_reset_user_password(
-    target_user_id: int,
-    user_id: int = Depends(get_user_from_token)
-):
-    """
-    Reseta a senha de um usuário gerando senha temporária (apenas admin)
-    """
-    # Verificar role
-    user_role = get_user_role(user_id)
-    if user_role != 'admin':
-        raise HTTPException(status_code=403, detail="Acesso negado. Apenas admins.")
-
-    conn = get_db_connection()
-    if not conn:
-        raise HTTPException(status_code=500, detail="Erro ao conectar ao banco")
-
-    try:
-        cursor = conn.cursor(dictionary=True)
-
-        # Verificar se usuário alvo existe
-        cursor.execute(
-            "SELECT user_id, username, email FROM users WHERE user_id = ?",
-            (target_user_id,)
-        )
-        target_user = cursor.fetchone()
-
-        if not target_user:
-            raise HTTPException(status_code=404, detail="Usuário não encontrado")
-
-        # Gerar senha temporária
-        temp_password = generate_temp_password()
-
-        # Hash da senha temporária
-        password_hash = hash_password(temp_password)
-
-        # Atualizar senha no banco
-        cursor.execute(
-            "UPDATE users SET password_hash = ? WHERE user_id = ?",
-            (password_hash, target_user_id)
-        )
-        conn.commit()
-
-        # Log no console
-        logger.info(f"Senha resetada pelo admin {user_id} para o usuário {target_user_id} ({target_user['email']})")
-
-        cursor.close()
-        conn.close()
-
-        return {
-            "success": True,
-            "temp_password": temp_password,
-            "message": f"Senha do usuário {target_user['email']} resetada com sucesso"
-        }
-
-    except HTTPException:
-        if conn:
-            conn.close()
-        raise
-    except Exception as e:
-        import traceback
-        logger.error(f"Erro ao resetar senha: {e}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        if conn:
-            conn.close()
-        raise HTTPException(status_code=500, detail=str(e))
-
+# generate_temp_password e reset-user-password removidos — sistema passwordless
 
 @app.patch("/api/admin/users/{target_user_id}/level", response_model=dict)
 async def admin_update_user_level(

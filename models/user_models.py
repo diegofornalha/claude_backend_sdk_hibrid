@@ -2,7 +2,7 @@
 User Models - Validações Pydantic para usuários do sistema
 
 Define schemas para:
-- Criação de mentorados
+- Criação de mentorados (via phone_number, passwordless)
 - Atualização de perfil
 - Validações de dados
 
@@ -10,13 +10,12 @@ Uso: Importar nas rotas para validar payloads
 """
 
 from typing import Optional
-from pydantic import BaseModel, EmailStr, Field, field_validator
-from datetime import datetime
+from pydantic import BaseModel, Field, field_validator
 import re
 
 
 class MentoradoCreate(BaseModel):
-    """Schema para criação de mentorado"""
+    """Schema para criação de mentorado (passwordless — via WhatsApp OTP)"""
 
     username: str = Field(
         ...,
@@ -24,19 +23,13 @@ class MentoradoCreate(BaseModel):
         max_length=100,
         description="Nome completo do mentorado"
     )
-    email: EmailStr = Field(
+    phone_number: str = Field(
         ...,
-        description="Email válido e único"
-    )
-    password: str = Field(
-        ...,
-        min_length=6,
-        max_length=100,
-        description="Senha com mínimo 6 caracteres"
-    )
-    phone_number: Optional[str] = Field(
-        None,
         description="Telefone no formato +5511999999999 ou 11999999999"
+    )
+    email: Optional[str] = Field(
+        None,
+        description="Email opcional (informativo)"
     )
     profession: Optional[str] = Field(
         None,
@@ -61,9 +54,7 @@ class MentoradoCreate(BaseModel):
 
     @field_validator('phone_number')
     @classmethod
-    def validate_phone(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return v
+    def validate_phone(cls, v: str) -> str:
         # Remove caracteres não numéricos exceto +
         cleaned = re.sub(r'[^\d+]', '', v)
         # Valida formato brasileiro
@@ -113,7 +104,7 @@ class MentoradoResponse(BaseModel):
 
     user_id: int
     username: str
-    email: str
+    email: Optional[str] = None
     phone_number: Optional[str] = None
     profession: Optional[str] = None
     specialty: Optional[str] = None
@@ -128,32 +119,15 @@ class MentoradoResponse(BaseModel):
 
 
 class AdminCreate(BaseModel):
-    """Schema para criação de admin"""
+    """Schema para criação de admin (passwordless)"""
 
     username: str = Field(..., min_length=2, max_length=100)
-    email: EmailStr
-    password: str = Field(..., min_length=8)  # Admins precisam de senha mais forte
+    phone_number: str = Field(..., description="Telefone E.164")
 
-
-class UserLogin(BaseModel):
-    """Schema para login"""
-
-    email: EmailStr
-    password: str
-
-
-class PasswordChange(BaseModel):
-    """Schema para alteração de senha"""
-
-    current_password: str
-    new_password: str = Field(..., min_length=6)
-
-    @field_validator('new_password')
+    @field_validator('phone_number')
     @classmethod
-    def validate_new_password(cls, v: str, info) -> str:
-        current = info.data.get('current_password')
-        if current and v == current:
-            raise ValueError('Nova senha deve ser diferente da atual')
-        return v
-
-
+    def validate_phone(cls, v: str) -> str:
+        cleaned = re.sub(r'[^\d+]', '', v)
+        if not re.match(r'^\+?[0-9]{10,15}$', cleaned):
+            raise ValueError('Telefone inválido')
+        return cleaned

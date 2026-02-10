@@ -214,7 +214,7 @@ class OpenRouterProvider(LLMProvider):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://nandamac.cloud",
+            "HTTP-Referer": "https://agentesintegrados.com",
             "X-Title": "Nanda Assistant"
         }
 
@@ -272,7 +272,7 @@ class OpenRouterProvider(LLMProvider):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://nandamac.cloud",
+            "HTTP-Referer": "https://agentesintegrados.com",
             "X-Title": "Nanda Assistant"
         }
 

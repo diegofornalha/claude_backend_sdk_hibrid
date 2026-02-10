@@ -102,7 +102,7 @@ async def get_user_chat_sessions(args: Dict[str, Any]) -> Dict:
                     "updated_at": str(s["updated_at"]) if s.get("updated_at") else None,
                     "message_count": s["message_count"],
                     "total_cost_usd": float(s["total_cost_usd"]) if s.get("total_cost_usd") else 0,
-                    "url": f"https://mvp.nandamac.cloud/admin/chat/{s['session_id']}"
+                    "url": f"https://mvp.agentesintegrados.com/admin/chat/{s['session_id']}"
                 }
                 for s in sessions
             ]

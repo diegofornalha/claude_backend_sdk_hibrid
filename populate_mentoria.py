@@ -64,7 +64,7 @@ def main():
             ON DUPLICATE KEY UPDATE role = 'admin'
         """, (
             'nanda_admin',
-            'crm@nandamac.cloud',
+            'crm@agentesintegrados.com',
             password_hash,
             '11999990000',
             'active',
@@ -203,7 +203,7 @@ def main():
         print("\n🔑 Credenciais de Teste:")
         print("=" * 60)
         print("   👑 Admin:")
-        print("      Email: crm@nandamac.cloud")
+        print("      Email: crm@agentesintegrados.com")
         print("      Senha: password123")
         print()
         print("   🎓 Mentores:")

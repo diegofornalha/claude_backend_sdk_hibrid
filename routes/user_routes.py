@@ -24,7 +24,7 @@ COMO MIGRAR:
 """
 
 from fastapi import APIRouter, HTTPException, status, Depends, Request
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import logging
 
@@ -46,7 +46,7 @@ router = APIRouter(prefix="/api/users", tags=["Users"])
 class UserUpdateRequest(BaseModel):
     """Request para atualizar usuario."""
     username: Optional[str] = None
-    email: Optional[EmailStr] = None
+    email: Optional[str] = None  # Legado — mantido como opcional
     phone_number: Optional[str] = None
     profession: Optional[str] = None
     specialty: Optional[str] = None

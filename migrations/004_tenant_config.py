@@ -173,7 +173,7 @@ def run_migration():
             ) VALUES (
                 'default', 'Nanda', 'sua mentora', 'Sistema de Diagnóstico Inteligente para Profissionais de Saúde',
                 '#059669', '#d1fae5', '#047857', '#10b981',
-                'crm-api.nandamac.cloud', 'mvp.nandamac.cloud', 1, 1, 1
+                'crm-api.agentesintegrados.com', 'mvp.agentesintegrados.com', 1, 1, 1
             )
         """)
         print("  ✅ Config default criada")
