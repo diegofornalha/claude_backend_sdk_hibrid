@@ -16,7 +16,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 # SQLite removido - usando Turso/libSQL
 import jwt
-import hashlib
 import random
 import string
 from datetime import datetime, timedelta
@@ -205,7 +204,6 @@ class LogoutRequest(BaseModel):
 
 class UpdateUserProfile(BaseModel):
     username: Optional[str] = None
-    email: Optional[str] = None
     phone_number: Optional[str] = None
     profile_image_url: Optional[str] = None
 
@@ -222,42 +220,6 @@ class UpdateHotspotStatus(BaseModel):
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login")
 
 # Helper functions
-def hash_password(password, salt=None):
-    """Hash a password with a salt and return base64 encoded string"""
-    if not salt:
-        salt = os.urandom(32)  # Generate a new salt if not provided
-    
-    # Hash the password with the salt
-    key = hashlib.pbkdf2_hmac(
-        'sha256',
-        password.encode('utf-8'),
-        salt,
-        100000  # Number of iterations
-    )
-    
-    # Combine salt and key, then base64 encode for storage in text column
-    storage = salt + key
-    return base64.b64encode(storage).decode('ascii')
-
-def verify_password(stored_password, provided_password):
-    """Verify a password against a stored hash"""
-    # Decode the base64 stored password
-    decoded = base64.b64decode(stored_password.encode('ascii'))
-    
-    salt = decoded[:32]  # Get the salt from the stored password
-    stored_key = decoded[32:]
-    
-    # Hash the provided password with the same salt
-    key = hashlib.pbkdf2_hmac(
-        'sha256',
-        provided_password.encode('utf-8'),
-        salt,
-        100000  # Same number of iterations as in hash_password
-    )
-    
-    # Compare the generated key with the stored key
-    return key == stored_key
-
 def generate_token(user_id):
     """Generate a JWT token for the user (deprecated, use generate_access_token)"""
     expiration = datetime.now() + timedelta(hours=JWT_EXPIRATION_HOURS)
@@ -745,8 +707,6 @@ async def get_user_from_token(token: str = Depends(oauth2_scheme)):
 def generate_otp():
     """Generate a 6-digit OTP"""
     return ''.join(random.choices(string.digits, k=6))
-
-# send_email removido — autenticação agora via WhatsApp OTP
 
 def save_image_locally(image_data, filename):
     """
@@ -1949,10 +1909,10 @@ async def verify_otp(verification: OTPVerify):
 
         cursor.execute(
             """
-            INSERT INTO users (username, email, password_hash, phone_number, registration_date, account_status, verification_status, role)
-            VALUES (%s, %s, %s, %s, %s, 'active', 1, %s)
+            INSERT INTO users (username, phone_number, registration_date, account_status, verification_status, role)
+            VALUES (%s, %s, %s, 'active', 1, %s)
             """,
-            (f"user{phone_suffix}", "", "", phone, datetime.now(), role)
+            (f"user{phone_suffix}", phone, datetime.now(), role)
         )
         connection.commit()
 
@@ -2109,18 +2069,6 @@ async def update_user(user_id: int, update_data: UpdateUserProfile, current_user
                 connection.close()
                 raise HTTPException(status_code=409, detail="Nome de usuário já está em uso")
             update_fields["username"] = update_data.username
-
-        # Verificar email duplicado
-        if update_data.email is not None:
-            cursor.execute(
-                "SELECT user_id FROM users WHERE email = %s AND user_id != %s",
-                (update_data.email, user_id)
-            )
-            if cursor.fetchone():
-                cursor.close()
-                connection.close()
-                raise HTTPException(status_code=409, detail="Email já está em uso")
-            update_fields["email"] = update_data.email
 
         if update_data.phone_number is not None:
             update_fields["phone_number"] = update_data.phone_number
@@ -4109,9 +4057,9 @@ async def create_or_promote_mentor(
                 username = f"mentor{phone_suffix}"
 
             cursor.execute("""
-                INSERT INTO users (username, email, password_hash, phone_number, account_status, role, verification_status)
-                VALUES (%s, %s, %s, %s, 'active', 'mentor', 1)
-            """, (username, "", "", phone))
+                INSERT INTO users (username, phone_number, account_status, role, verification_status)
+                VALUES (%s, %s, 'active', 'mentor', 1)
+            """, (username, phone))
             conn.commit()
             new_mentor_id = cursor.lastrowid
 
@@ -4323,11 +4271,11 @@ async def list_all_leads(
             base_query += " AND ls.current_state = %s"
             params.append(state)
 
-        # Filtrar por busca (nome ou email)
+        # Filtrar por busca (nome, email ou telefone)
         if search:
-            base_query += " AND (u.username LIKE %s OR u.email LIKE %s)"
+            base_query += " AND (u.username LIKE %s OR u.email LIKE %s OR u.phone_number LIKE %s)"
             search_term = f"%{search}%"
-            params.extend([search_term, search_term])
+            params.extend([search_term, search_term, search_term])
 
         # Filtrar por profissão
         if profession:
@@ -4367,8 +4315,8 @@ async def list_all_leads(
 
         if search:
             count_search_term = f"%{search}%"
-            count_query += " AND (u.username LIKE %s OR u.email LIKE %s)"
-            count_params.extend([count_search_term, count_search_term])
+            count_query += " AND (u.username LIKE %s OR u.email LIKE %s OR u.phone_number LIKE %s)"
+            count_params.extend([count_search_term, count_search_term, count_search_term])
 
         if profession:
             count_query += " AND u.profession LIKE %s"
@@ -4738,8 +4686,6 @@ async def assign_mentor_to_mentorado(
             conn.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# generate_temp_password e reset-user-password removidos — sistema passwordless
 
 @app.patch("/api/admin/users/{target_user_id}/level", response_model=dict)
 async def admin_update_user_level(
